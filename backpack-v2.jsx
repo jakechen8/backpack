@@ -143,7 +143,7 @@ export default function Backpack() {
     } else if (q.includes("money") || q.includes("owe") || q.includes("pay")) {
       setAnswer({ text: "Two things: $10 for Maya's Science Museum trip (due today), and Ethan's lunch balance needs ~$15.", from: "ParentSquare + Infinite Campus" });
     } else {
-      setAnswer({ text: "I found related info across your school messages. Try being more specific — like \"What does Ethan need?\" or \"When is picture day?\"", from: "6 connected sources" });
+      setAnswer({ text: 'I found related info across your school messages. Try being more specific — like "What does Ethan need?" or "When is picture day?"', from: "6 connected sources" });
     }
   };
 
@@ -231,7 +231,7 @@ export default function Backpack() {
                 value={ask}
                 onChange={e => { setAsk(e.target.value); setAnswer(null); }}
                 onKeyDown={e => e.key === "Enter" && handleAsk()}
-                placeholder="Ask anything — \"What does Maya need tomorrow?\""
+                placeholder={'Ask anything — "What does Maya need tomorrow?"'}
                 className="w-full pl-12 pr-12 py-4 bg-white border border-stone-200 rounded-2xl text-sm text-stone-800 placeholder:text-stone-300 focus:outline-none focus:border-stone-400 transition shadow-sm"
               />
               {ask && (
