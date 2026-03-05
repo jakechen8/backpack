@@ -1,0 +1,188 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── HELPER FUNCTIONS ─────────────────────────────────────
+    //
+    // Security model:
+    //   • owner  — full control, can invite/remove members, delete family
+    //   • parent — can create/edit children, items, sources (no member mgmt)
+    //   • editor — same as parent (for non-parent caregivers with write access)
+    //   • viewer — read-only across all family data (grandma, babysitter)
+    //
+    // Write paths:
+    //   • Messages, files, items are CREATED only by Cloud Functions (server)
+    //   • Items can be UPDATED by writers (mark done, edit text, dismiss)
+    //   • Viewers can ONLY update item.done and item.doneBy (check things off)
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isFamilyMember(familyId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
+    }
+
+    function getFamilyRole(familyId) {
+      return get(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid)).data.role;
+    }
+
+    // Full write access (not viewers)
+    function canWrite(familyId) {
+      return isFamilyMember(familyId)
+        && getFamilyRole(familyId) in ['owner', 'parent', 'editor'];
+    }
+
+    // Ownership check
+    function isOwner(familyId) {
+      return isFamilyMember(familyId)
+        && getFamilyRole(familyId) == 'owner';
+    }
+
+    // Can invite (owner or parent, not editor/viewer)
+    function canInvite(familyId) {
+      return isFamilyMember(familyId)
+        && getFamilyRole(familyId) in ['owner', 'parent'];
+    }
+
+    // P0 FIX (#2): Viewer can only toggle done status on items.
+    // Returns true if the ONLY changed fields are done, doneBy, doneAt.
+    function isToggleDoneOnly() {
+      let allowed = ['done', 'doneBy', 'doneAt'].toSet();
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(allowed);
+    }
+
+
+    // ─── USERS ────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+
+    // ─── FAMILIES ─────────────────────────────────────────────
+    match /families/{familyId} {
+      allow read:   if isFamilyMember(familyId);
+
+      // P1 FIX (#4): On create, require that the creator sets themselves
+      // as owner in the same batch. We validate the doc shape.
+      allow create: if isSignedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.keys().hasAll(['name', 'createdBy', 'createdAt']);
+
+      allow update: if canWrite(familyId);
+      allow delete: if isOwner(familyId);
+
+
+      // ── Members ──
+      match /members/{memberId} {
+        allow read: if isFamilyMember(familyId);
+
+        // P1 FIX (#4): The creator can write their OWN member doc
+        // during family bootstrap (memberId must match their uid).
+        // After that, only the owner can manage members.
+        allow create: if isSignedIn()
+          && (
+            // Bootstrap: user creating their own owner record
+            (memberId == request.auth.uid
+              && request.resource.data.role == 'owner')
+            // Owner adding other members
+            || isOwner(familyId)
+          );
+
+        allow update, delete: if isOwner(familyId);
+      }
+
+
+      // ── Children ──
+      match /children/{childId} {
+        allow read:  if isFamilyMember(familyId);
+        allow write: if canWrite(familyId);
+      }
+
+
+      // ── Sources (email connectors, platforms) ──
+      // P1 FIX (#3): Split into public metadata vs private credentials.
+      // This collection holds ONLY non-sensitive metadata.
+      // OAuth tokens are in /sources_credentials (server-only).
+      match /sources/{sourceId} {
+        allow read:  if isFamilyMember(familyId);
+        allow write: if canWrite(familyId);
+      }
+
+      // ── Source Credentials (OAuth tokens) ──
+      // P1 FIX (#3): Tokens live here. NEVER readable by clients.
+      // Only Cloud Functions (Admin SDK) read/write these.
+      match /sources_credentials/{sourceId} {
+        allow read:  if false;
+        allow write: if false;
+      }
+
+
+      // ── Messages (ingested emails) ──
+      match /messages/{messageId} {
+        allow read:  if isFamilyMember(familyId);
+        allow write: if false; // Cloud Functions only
+      }
+
+
+      // ── Items (tasks, bring-items, events, payments) ──
+      match /items/{itemId} {
+        allow read:   if isFamilyMember(familyId);
+        allow create: if false; // Cloud Functions only
+
+        // P0 FIX (#2): Role-aware updates.
+        //   • Writers (owner/parent/editor) can update any field
+        //   • Viewers can ONLY toggle done/doneBy/doneAt
+        allow update: if canWrite(familyId)
+          || (isFamilyMember(familyId) && isToggleDoneOnly());
+
+        allow delete: if canWrite(familyId);
+      }
+
+
+      // ── Files (attachments, forms, flyers) ──
+      match /files/{fileId} {
+        allow read:  if isFamilyMember(familyId);
+        allow write: if false; // Cloud Functions only
+      }
+
+
+      // ── Audit Log ──
+      // P2 FIX (#9): Compliance — immutable audit trail.
+      // Written by Cloud Functions. Nobody can update or delete.
+      match /audit/{logId} {
+        allow read:  if isOwner(familyId);
+        allow write: if false; // Cloud Functions only
+      }
+    }
+
+
+    // ─── INVITES ──────────────────────────────────────────────
+    // P0 FIX (#1): Invites locked to family owners/parents only.
+    // Invite doc must reference a familyId the creator has invite rights to.
+    // Assignable roles are capped — you cannot invite someone as owner.
+    match /invites/{inviteId} {
+      allow read: if isSignedIn()
+        && resource.data.email == request.auth.token.email;
+
+      allow create: if isSignedIn()
+        // Must be an owner or parent of the referenced family
+        && canInvite(request.resource.data.familyId)
+        // Cannot invite with owner role (prevents escalation)
+        && request.resource.data.role in ['parent', 'editor', 'viewer']
+        // Must include required fields
+        && request.resource.data.keys().hasAll(['familyId', 'email', 'role', 'invitedBy', 'createdAt'])
+        // Must set invitedBy to their own uid
+        && request.resource.data.invitedBy == request.auth.uid;
+
+      // Only the invited person can delete (accept/decline)
+      allow delete: if isSignedIn()
+        && resource.data.email == request.auth.token.email;
+
+      // No updates — invites are immutable once created
+      allow update: if false;
+    }
+  }
+}

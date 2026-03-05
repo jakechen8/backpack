@@ -1,0 +1,47 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── FAMILY FILES ────────────────────────────────────────
+    // Attachments, PDFs, flyers, forms — stored per family.
+    // Only family members can download. Only server can upload.
+    match /families/{familyId}/files/{allPaths=**} {
+      allow read: if request.auth != null
+        && firestore.exists(
+            /databases/(default)/documents/families/$(familyId)/members/$(request.auth.uid)
+          );
+      allow write: if false; // Cloud Functions (Admin SDK) only
+    }
+
+
+    // ── USER AVATARS ────────────────────────────────────────
+    // P1 FIX (#5): Reads scoped to family co-members, not all users.
+    //
+    // We can't efficiently check "are these two users in the same family"
+    // in storage rules without multiple get() calls. Instead we use a
+    // pragmatic approach: avatars are readable by the user themselves,
+    // and we serve avatars to other family members via Cloud Functions
+    // (which generates short-lived signed URLs).
+    //
+    // This eliminates cross-tenant profile scraping entirely.
+    match /users/{userId}/avatar/{allPaths=**} {
+      // Only the owner can read their own avatar directly
+      allow read: if request.auth != null
+        && request.auth.uid == userId;
+
+      // Only the owner can upload, with strict constraints
+      allow write: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.size < 2 * 1024 * 1024          // Max 2 MB
+        && request.resource.contentType.matches('image/.*'); // Images only
+    }
+
+
+    // ── DENY ALL OTHER PATHS ────────────────────────────────
+    // Explicit deny-all so nothing leaks if we add paths later.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

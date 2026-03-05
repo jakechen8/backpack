@@ -1,0 +1,28 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "items",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date",   "order": "ASCENDING" },
+        { "fieldPath": "urgent", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "items",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "childId", "order": "ASCENDING" },
+        { "fieldPath": "date",    "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "messages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
